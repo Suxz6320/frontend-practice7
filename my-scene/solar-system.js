@@ -2,8 +2,9 @@
  * 自主实践：太阳系漫游（Three.js 版）
  * 主题：星球宇宙 —— 太阳、行星、星空组成一个完整的恒星系场景
  *
- * 第一步（本提交）：场景骨架
- *   场景 / 透视相机 / 渲染器 / 星空背景粒子 / 太阳 / 双光源 / 窗口 resize 适配 / 动画循环
+ * 第一步：场景骨架 —— 场景 / 相机 / 渲染器 / 星空 / 太阳 / 光源 / resize
+ * 第二步（本提交）：行星系统 —— 数据驱动生成六颗行星、轨道指示环、
+ *   土星光环（Torus）、地月嵌套公转，以及支点 Group 公转动画
  */
 
 // ---------- 1. 场景 ----------
@@ -59,10 +60,85 @@ const sun = new THREE.Mesh(
   new THREE.SphereGeometry(1.2, 48, 48),
   new THREE.MeshBasicMaterial({ color: 0xffcc33 })
 );
-sun.userData.name = '太阳';
+sun.userData = { name: '太阳', desc: '太阳系的中心天体，行星的光与热都来自这里' };
 scene.add(sun);
 
-// ---------- 7. 动画循环 ----------
+// ---------- 7. 行星系统 ----------
+// 数据驱动：每颗行星一条配置，循环生成，避免手写六个相似物体
+// speed 是相对公转速度，动画时再统一乘系数
+const PLANET_DATA = [
+  { name: '水星', radius: 0.18, color: 0xa8a29a, orbit: 2.2, speed: 1.55, desc: '离太阳最近、公转最快的行星' },
+  { name: '金星', radius: 0.30, color: 0xe8c27a, orbit: 3.0, speed: 1.15, desc: '夜空中最亮的行星' },
+  { name: '地球', radius: 0.32, color: 0x4f9df7, orbit: 3.9, speed: 0.85, desc: '我们的家园，带着一颗卫星月球', hasMoon: true },
+  { name: '火星', radius: 0.24, color: 0xe5703a, orbit: 4.8, speed: 0.65, desc: '布满铁锈色沙漠的红色行星' },
+  { name: '木星', radius: 0.70, color: 0xd8a878, orbit: 6.1, speed: 0.40, desc: '太阳系体积最大的行星' },
+  { name: '土星', radius: 0.60, color: 0xe3d6a8, orbit: 7.5, speed: 0.30, desc: '带着明亮光环的气态巨行星', hasRing: true }
+];
+
+const planets = []; // 集中保存所有可动画、可交互的天体（含太阳）
+planets.push(sun);
+
+PLANET_DATA.forEach(data => {
+  // 公转支点：一个位于太阳中心的空 Group，
+  // 行星挂在它的 +x 方向；动画里只转 Group，行星便沿圆周公转
+  const pivot = new THREE.Group();
+  pivot.rotation.y = Math.random() * Math.PI * 2; // 初始相位随机，避免排成一条线
+  scene.add(pivot);
+
+  const planet = new THREE.Mesh(
+    new THREE.SphereGeometry(data.radius, 32, 32),
+    new THREE.MeshStandardMaterial({ color: data.color, roughness: 0.85, metalness: 0.05 })
+  );
+  planet.position.x = data.orbit;
+  planet.userData = {
+    name: data.name,
+    desc: data.desc,
+    baseColor: data.color,
+    pivot: pivot,
+    orbitSpeed: data.speed
+  };
+  pivot.add(planet);
+
+  // 轨道指示环：很细的 RingGeometry 旋转放平，让公转轨迹一目了然
+  const orbitRing = new THREE.Mesh(
+    new THREE.RingGeometry(data.orbit - 0.015, data.orbit + 0.015, 96),
+    new THREE.MeshBasicMaterial({
+      color: 0x6ea8ff,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.35
+    })
+  );
+  orbitRing.rotation.x = -Math.PI / 2; // 环默认立在 xy 平面，绕 x 轴放平
+  scene.add(orbitRing);
+
+  if (data.hasRing) {
+    // 土星光环：Torus（圆环体）倾斜后挂到行星身上，随行星一起公转
+    const saturnRing = new THREE.Mesh(
+      new THREE.TorusGeometry(data.radius * 1.6, data.radius * 0.18, 16, 80),
+      new THREE.MeshStandardMaterial({ color: 0xcdb98c, roughness: 0.9 })
+    );
+    saturnRing.rotation.x = Math.PI / 2.6;
+    planet.add(saturnRing);
+  }
+
+  if (data.hasMoon) {
+    // 地月系统：月球公转支点再嵌套在地球下，形成层级变换
+    const moonPivot = new THREE.Group();
+    planet.add(moonPivot);
+    const moon = new THREE.Mesh(
+      new THREE.SphereGeometry(0.09, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0xcfcfcf, roughness: 1 })
+    );
+    moon.position.x = 0.62;
+    moonPivot.add(moon);
+    planet.userData.moonPivot = moonPivot;
+  }
+
+  planets.push(planet);
+});
+
+// ---------- 8. 动画循环 ----------
 const clock = new THREE.Clock(); // 按真实时间驱动，帧率不同速度也一致
 
 function animate() {
@@ -72,18 +148,30 @@ function animate() {
   sun.rotation.y += delta * 0.25;      // 太阳缓慢自转
   starField.rotation.y += delta * 0.01; // 星空极缓慢转动，营造太空漂移感
 
+  // 行星公转与自转：转支点 Group 实现圆周运动，行星本体再自转
+  planets.forEach(body => {
+    if (body.userData.pivot) {
+      body.userData.pivot.rotation.y += delta * body.userData.orbitSpeed * 0.3;
+      body.rotation.y += delta * 0.5; // 行星本体自转
+      // 月球绕地球转
+      if (body.userData.moonPivot) {
+        body.userData.moonPivot.rotation.y += delta * 2.2;
+      }
+    }
+  });
+
   renderer.render(scene, camera);
 }
 animate();
 
-// ---------- 8. 窗口 resize 适配：相机宽高比 + 投影矩阵 + 渲染器尺寸 三件套 ----------
+// ---------- 9. 窗口 resize 适配：相机宽高比 + 投影矩阵 + 渲染器尺寸 三件套 ----------
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// ---------- 9. 简易帧率显示，便于观察流畅度 ----------
+// ---------- 10. 简易帧率显示，便于观察流畅度 ----------
 const fpsElement = document.getElementById('fps');
 let frameCount = 0;
 let fpsTimer = 0;
