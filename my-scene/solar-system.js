@@ -3,8 +3,10 @@
  * 主题：星球宇宙 —— 太阳、行星、星空组成一个完整的恒星系场景
  *
  * 第一步：场景骨架 —— 场景 / 相机 / 渲染器 / 星空 / 太阳 / 光源 / resize
- * 第二步（本提交）：行星系统 —— 数据驱动生成六颗行星、轨道指示环、
+ * 第二步：行星系统 —— 数据驱动生成六颗行星、轨道指示环、
  *   土星光环（Torus）、地月嵌套公转，以及支点 Group 公转动画
+ * 第三步（本提交）：独立研究 —— OrbitControls 拖拽旋转/滚轮缩放，
+ *   Raycaster 射线拾取实现点击行星高亮并显示跟随信息标签
  */
 
 // ---------- 1. 场景 ----------
@@ -26,6 +28,18 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 高分屏不糊
 document.getElementById('scene-container').appendChild(renderer.domElement);
+
+// ---------- 3.1 轨道控制器 OrbitControls（独立研究任务1）----------
+// 引入方式：index.html 中在 three.min.js 之后用 script 标签引入 examples/js 版
+// OrbitControls.js（非 module 版会挂到 THREE.OrbitControls 全局）
+// 关键配置：阻尼惯性、最近/最远距离限制、右键平移
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;      // 开启阻尼，松手后有惯性，旋转更顺滑
+controls.dampingFactor = 0.06;      // 阻尼系数，越小滑得越久
+controls.minDistance = 3;           // 最近不能钻进太阳内部
+controls.maxDistance = 40;          // 最远仍能看全整个星系
+controls.enablePan = true;          // 允许右键平移
+renderer.domElement.style.cursor = 'grab';
 
 // ---------- 4. 光源：环境光打底 + 太阳位置的点光源造型 ----------
 // 环境光：弱，只保证行星背光面不是死黑
@@ -138,6 +152,65 @@ PLANET_DATA.forEach(data => {
   planets.push(planet);
 });
 
+// ---------- 7.5 点击交互：Raycaster 射线拾取（独立研究任务2）----------
+// 原理：浏览器只知道鼠标在二维屏幕上的位置，无法直接点中三维物体。
+// Raycaster 从相机光心出发、穿过鼠标所在的 NDC 坐标发射一条三维射线，
+// 再逐一对物体包围球/三角面求交，intersectObjects 返回按距离排序的命中列表，
+// 取第一个即“最前面的物体”。
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const label = document.getElementById('planet-label');
+let selected = null;
+const labelWorld = new THREE.Vector3(); // 复用，避免每帧 new 对象
+
+// 从鼠标事件找出被点中的行星（命中光环/月球等子物体时向上回溯到行星本体）
+function pickPlanet(event) {
+  // 屏幕像素坐标 -> NDC 归一化设备坐标，x/y 都在 -1 ~ 1
+  pointer.x = (event.clientX / window.innerWidth) * 2 - 1;
+  pointer.y = -(event.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera); // 生成射线
+  const hits = raycaster.intersectObjects(planets, true); // true：递归检测子物体
+  if (hits.length === 0) return null;
+  let obj = hits[0].object;
+  while (obj && !obj.userData.name) obj = obj.parent;
+  return obj || null;
+}
+
+// 选中高亮：受光材质加自发光 + 整体放大；太阳是 Basic 材质只放大
+function setSelection(planet) {
+  if (selected) {
+    if (selected.material.emissive) selected.material.emissive.setHex(0x000000);
+    selected.scale.setScalar(1);
+  }
+  selected = planet;
+  if (!selected) {
+    label.classList.add('hidden');
+    return;
+  }
+  if (selected.material.emissive) selected.material.emissive.setHex(0x2e6bff);
+  selected.scale.setScalar(1.15);
+  label.innerHTML =
+    '<h2>' + selected.userData.name + '</h2><p>' + selected.userData.desc + '</p>';
+  label.classList.remove('hidden');
+}
+
+// 区分“点击”和“拖拽旋转视角”：按下与松开位置几乎不变才算点击
+let downX = 0;
+let downY = 0;
+renderer.domElement.addEventListener('pointerdown', event => {
+  downX = event.clientX;
+  downY = event.clientY;
+});
+renderer.domElement.addEventListener('pointerup', event => {
+  if (Math.abs(event.clientX - downX) > 5 || Math.abs(event.clientY - downY) > 5) return;
+  setSelection(pickPlanet(event)); // 点到空白处返回 null，取消选中
+});
+// 悬停在可点击天体上时鼠标变成手型
+renderer.domElement.addEventListener('pointermove', event => {
+  if (event.buttons !== 0) return; // 正在拖拽时不反复检测
+  renderer.domElement.style.cursor = pickPlanet(event) ? 'pointer' : 'grab';
+});
+
 // ---------- 8. 动画循环 ----------
 const clock = new THREE.Clock(); // 按真实时间驱动，帧率不同速度也一致
 
@@ -159,6 +232,21 @@ function animate() {
       }
     }
   });
+
+  controls.update(); // 开了阻尼后必须每帧调用，惯性才生效
+
+  // 信息标签跟随选中行星：取世界坐标投影到屏幕坐标
+  if (selected) {
+    selected.getWorldPosition(labelWorld);
+    const projected = labelWorld.clone().project(camera);
+    if (projected.z > 1) {
+      label.classList.add('hidden'); // 行星在相机背后时隐藏
+    } else {
+      label.classList.remove('hidden');
+      label.style.left = ((projected.x * 0.5 + 0.5) * window.innerWidth) + 'px';
+      label.style.top = ((-projected.y * 0.5 + 0.5) * window.innerHeight) + 'px';
+    }
+  }
 
   renderer.render(scene, camera);
 }

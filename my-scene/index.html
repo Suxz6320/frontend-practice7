@@ -11,7 +11,7 @@
   <div id="info-panel">
     <h1>太阳系漫游</h1>
     <p>自主实践主题三维场景 · Three.js</p>
-    <p id="hint">观察：六颗行星沿轨道环公转，土星带光环，月球绕地球转。</p>
+    <p id="hint">左键拖拽旋转视角 · 滚轮缩放 · 右键平移 · 点击行星查看介绍</p>
   </div>
 
   <!-- 行星信息标签（点击行星后显示，后续交互步骤启用） -->
@@ -23,8 +23,9 @@
   <!-- 三维画布挂载点 -->
   <div id="scene-container"></div>
 
-  <!-- 在线引入 Three.js（与案例复现保持一致） -->
+  <!-- 在线引入 Three.js 与 OrbitControls（与案例复现保持一致） -->
   <script src="https://cdn.jsdelivr.net/npm/three@0.130.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.130.0/examples/js/controls/OrbitControls.js"></script>
   <script src="solar-system.js"></script>
 </body>
 </html>
