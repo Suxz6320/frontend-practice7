@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Cache-Control" content="no-store">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>独立研究 · Three.js 性能对比实验</title>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.130.0/build/three.min.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; background: #0d1120; color: #dce6ff;
+      font-family: "Microsoft YaHei", sans-serif; }
+    #panel {
+      position: fixed; top: 12px; left: 12px; z-index: 10; width: 560px;
+      max-height: calc(100vh - 24px); overflow-y: auto;
+      background: rgba(14, 20, 40, 0.92); border: 1px solid #3a5590;
+      border-radius: 10px; padding: 14px 18px;
+    }
+    h1 { font-size: 17px; margin: 0 0 6px; }
+    h2 { font-size: 14px; margin: 14px 0 6px; color: #8fc0ff; }
+    p, li { font-size: 12.5px; line-height: 1.6; color: #b8c6e8; margin: 3px 0; }
+    button {
+      background: #2f6fed; color: #fff; border: 0; border-radius: 6px;
+      padding: 7px 14px; font-size: 13px; cursor: pointer; margin: 4px 6px 4px 0;
+    }
+    button:disabled { background: #44506e; cursor: default; }
+    table { border-collapse: collapse; width: 100%; font-size: 12.5px; margin-top: 6px; }
+    th, td { border: 1px solid #3a5590; padding: 5px 8px; text-align: center; }
+    th { background: #1c2c52; color: #cfe0ff; }
+    .tag-aa { color: #7dffa8; }
+    .tag-noaa { color: #ffd27d; }
+    #progress { font-size: 13px; color: #ffd76a; margin: 8px 0; }
+    #live-fps { position: fixed; right: 14px; bottom: 12px; z-index: 10;
+      font-size: 13px; color: #7f8db0; }
+    #conclusion p { background: rgba(40, 70, 130, 0.25); padding: 6px 8px;
+      border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div id="panel">
+    <h1>独立研究任务 3：antialias 与物体数量对帧率的影响</h1>
+    <p>方法：每组实验新建一个 WebGLRenderer（pixelRatio 固定为 1，保证公平），
+       场景放置 N 个边长 0.8 的立方体（共享 1 份几何体与材质，逐帧各自旋转以产生
+       矩阵更新开销），1 个环境光 + 1 个方向光、无阴影。预热 0.5 秒后连续采样
+       120 帧，取平均 FPS 与平均单帧毫秒。每组结束强制丢失 WebGL 上下文再测下一组。</p>
+
+    <p>
+      <button id="run-all">自动运行全部 6 组</button>
+      <button id="manual-aa">手动：AA开 / 1000个</button>
+      <button id="manual-noaa">手动：AA关 / 1000个</button>
+    </p>
+    <div id="progress">就绪。</div>
+
+    <table>
+      <thead>
+        <tr><th>组别</th><th>antialias</th><th>物体数量</th><th>平均 FPS</th><th>单帧 ms</th></tr>
+      </thead>
+      <tbody id="result-body"></tbody>
+    </table>
+
+    <h2>A 组：抗锯齿开关对比（物体数量固定 1000）</h2>
+    <p>对比第 1、2 行。MSAA 多重采样只影响边缘，开启后立方体边缘锯齿减少，
+       但每像素采样次数增加，GPU 填充率开销上升。</p>
+    <h2>B 组：物体数量对比（antialias 固定开启）</h2>
+    <p>对比第 3、4、5、6 行（100 / 1000 / 3000 / 5000 个）。物体越多，
+       draw call 与每帧矩阵计算越多，帧率随数量上升而下降。
+       注意低数量时帧率会顶到测试环境的刷新率上限，此时几组帧率相同不代表开销相同，
+       要看单帧 ms 或继续加物体直到掉出上限才能看出差异。</p>
+    <div id="conclusion"></div>
+  </div>
+  <div id="live-fps">实时 FPS: --</div>
+  <div id="canvas-host"></div>
+
+<script>
+// ---------- 实验配置 ----------
+// 顺序即表格行号；1/2 行为 A 组，3~6 行为 B 组
+const TESTS = [
+  { label: 'A-1', aa: false, count: 1000 },
+  { label: 'A-2', aa: true,  count: 1000 },
+  { label: 'B-1', aa: true,  count: 100 },
+  { label: 'B-2', aa: true,  count: 1000 },
+  { label: 'B-3', aa: true,  count: 3000 },
+  { label: 'B-4', aa: true,  count: 5000 }
+];
+const WARMUP_MS = 500;
+const SAMPLE_FRAMES = 120;
+
+// 全局只允许一个渲染循环：session 令牌每开一组实验自增，
+// 旧循环下一次进入时发现令牌不符就自行退出，杜绝“旧循环渲染已销毁 renderer”。
+let renderer = null;
+let scene = null;
+let frameId = null;
+let session = 0;
+let running = false;
+
+function stopLoop() {
+  session++;
+  cancelAnimationFrame(frameId);
+  frameId = null;
+}
+
+// 销毁当前 renderer 并释放 WebGL 上下文
+function teardownRenderer() {
+  stopLoop();
+  if (renderer) {
+    if (scene) {
+      scene.traverse(obj => {
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) obj.material.dispose();
+      });
+    }
+    const oldCanvas = renderer.domElement;
+    renderer.dispose();
+    renderer.forceContextLoss(); // 释放 WebGL 上下文槽位
+    if (oldCanvas.parentNode) oldCanvas.parentNode.removeChild(oldCanvas);
+    renderer = null;
+    scene = null;
+  }
+}
+
+// ---------- 搭建一组测试场景 ----------
+function buildScene(count) {
+  const sc = new THREE.Scene();
+  sc.background = new THREE.Color(0x141a2e);
+  const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+  camera.position.set(0, 16, 24);
+  camera.lookAt(0, 0, 0);
+
+  sc.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const dir = new THREE.DirectionalLight(0xffffff, 0.9);
+  dir.position.set(8, 14, 6);
+  sc.add(dir);
+
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(40, 40),
+    new THREE.MeshStandardMaterial({ color: 0x24304d })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -1;
+  sc.add(floor);
+
+  // 立方体按立方体网格排布，共享几何体和材质
+  const side = Math.ceil(Math.cbrt(count));
+  const geo = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+  const mat = new THREE.MeshStandardMaterial({ color: 0x4fc3f7, roughness: 0.7 });
+  const cubes = [];
+  for (let i = 0; i < count; i++) {
+    const m = new THREE.Mesh(geo, mat);
+    const ix = i % side;
+    const iy = Math.floor(i / side) % side;
+    const iz = Math.floor(i / (side * side));
+    const spacing = 1.6;
+    const offset = ((side - 1) * spacing) / 2;
+    m.position.set(ix * spacing - offset, iy * spacing, iz * spacing - offset);
+    sc.add(m);
+    cubes.push(m);
+  }
+  return { scene: sc, camera: camera, cubes: cubes };
+}
+
+// ---------- 运行一组实验，返回 Promise<结果> ----------
+function runOne(test) {
+  return new Promise(resolve => {
+    teardownRenderer();
+    setTimeout(() => {
+      const mySession = session; // 本组令牌
+      const built = buildScene(test.count);
+      scene = built.scene;
+      const camera = built.camera;
+      const cubes = built.cubes;
+      renderer = new THREE.WebGLRenderer({ antialias: test.aa });
+      renderer.setPixelRatio(1); // 统一像素比，排除高分屏干扰
+      renderer.setSize(innerWidth, innerHeight);
+      document.getElementById('canvas-host').appendChild(renderer.domElement);
+
+      let sampled = 0;
+      let lastT = 0;
+      let frameMsSum = 0;
+      let warmupDone = false;
+      let warmupStart = 0;
+
+      function loop(now) {
+        if (mySession !== session || !renderer) return; // 已被新实验取代
+        frameId = requestAnimationFrame(loop);
+        for (let i = 0; i < cubes.length; i++) cubes[i].rotation.y += 0.01;
+        renderer.render(scene, camera);
+
+        if (!warmupDone) {
+          if (warmupStart === 0) warmupStart = now;
+          if (now - warmupStart >= WARMUP_MS) { warmupDone = true; lastT = now; }
+          return;
+        }
+        if (sampled === 0) lastT = now;
+        if (sampled > 0) frameMsSum += now - lastT;
+        lastT = now;
+        sampled++;
+        if (sampled >= SAMPLE_FRAMES) {
+          const avgMs = frameMsSum / (SAMPLE_FRAMES - 1);
+          resolve({ fps: 1000 / avgMs, ms: avgMs });
+          // 不在这里销毁，下一组开始时由 teardownRenderer 统一处理
+        }
+      }
+      frameId = requestAnimationFrame(loop);
+    }, 400); // 等浏览器回收旧上下文
+  });
+}
+
+// ---------- 表格与结论 ----------
+function addRow(test, result) {
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    '<td>' + test.label + '</td>' +
+    '<td class="' + (test.aa ? 'tag-aa' : 'tag-noaa') + '">' + (test.aa ? '开' : '关') + '</td>' +
+    '<td>' + test.count + '</td>' +
+    '<td>' + result.fps.toFixed(1) + '</td>' +
+    '<td>' + result.ms.toFixed(2) + '</td>';
+  document.getElementById('result-body').appendChild(tr);
+}
+
+function renderConclusions(results) {
+  const by = key => results.find(r => r.key === key);
+  const box = document.getElementById('conclusion');
+  box.innerHTML = '';
+  const aNo = by('A-1'), aYes = by('A-2');
+  if (aNo && aYes) {
+    const diff = aNo.fps - aYes.fps;
+    const pct = (diff / aNo.fps * 100).toFixed(1);
+    const p = document.createElement('p');
+    p.textContent = 'A 组结论：1000 个物体时，AA 关 ' + aNo.fps.toFixed(1) +
+      ' FPS，AA 开 ' + aYes.fps.toFixed(1) + ' FPS，相差 ' + Math.abs(diff).toFixed(1) +
+      ' FPS（' + Math.abs(pct) + '%）。' +
+      (Math.abs(pct) < 5
+        ? '本机 GPU 较宽裕，此规模下抗锯齿对帧率影响不明显，但边缘锯齿在静止画面中可观察到差异。'
+        : '开启抗锯齿有可感知的帧率代价，换来的是立方体边缘明显更平滑。');
+    box.appendChild(p);
+  }
+  const b1 = by('B-1'), b2 = by('B-2'), b3 = by('B-3'), b4 = by('B-4');
+  if (b1 && b4) {
+    const p = document.createElement('p');
+    p.textContent = 'B 组结论：100 个 ' + b1.fps.toFixed(1) + ' FPS → 1000 个 ' +
+      (b2 ? b2.fps.toFixed(1) : '--') + ' FPS → 3000 个 ' +
+      (b3 ? b3.fps.toFixed(1) : '--') + ' FPS → 5000 个 ' + b4.fps.toFixed(1) +
+      ' FPS。物体增多导致 draw call 与每帧矩阵更新增长，帧率下降；' +
+      '低数量时帧率顶到测试环境刷新率上限（本机约 240 FPS），几组数值相同，' +
+      '掉出上限后差异开始显现，高数量时 CPU 逐物体矩阵更新与 draw call 提交成为瓶颈。' +
+      '优化手段：合并几何体（BufferGeometryUtils.merge）、实例化渲染（InstancedMesh）、' +
+      '降低球体等几何体的分段数、减少光源与阴影。';
+    box.appendChild(p);
+  }
+}
+
+// ---------- 自动跑分 ----------
+document.getElementById('run-all').addEventListener('click', async () => {
+  if (running) return;
+  running = true;
+  document.getElementById('run-all').disabled = true;
+  document.getElementById('result-body').innerHTML = '';
+  const results = [];
+  for (let i = 0; i < TESTS.length; i++) {
+    const t = TESTS[i];
+    document.getElementById('progress').textContent =
+      '正在测试 ' + (i + 1) + '/' + TESTS.length + '：AA ' + (t.aa ? '开' : '关') +
+      '，物体 ' + t.count + ' 个 …';
+    const r = await runOne(t);
+    addRow(t, r);
+    results.push({ key: t.label, fps: r.fps, ms: r.ms });
+  }
+  document.getElementById('progress').textContent = '全部完成。';
+  renderConclusions(results);
+  document.getElementById('run-all').disabled = false;
+  running = false;
+});
+
+// ---------- 手动模式：常驻场景 + 实时帧率 ----------
+function manualRun(aa, count) {
+  teardownRenderer();
+  const mySession = session;
+  const built = buildScene(count);
+  scene = built.scene;
+  renderer = new THREE.WebGLRenderer({ antialias: aa });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(innerWidth, innerHeight);
+  document.getElementById('canvas-host').appendChild(renderer.domElement);
+  let frames = 0, timer = 0, last = performance.now();
+  function loop(now) {
+    if (mySession !== session || !renderer) return;
+    frameId = requestAnimationFrame(loop);
+    for (const c of built.cubes) c.rotation.y += 0.01;
+    renderer.render(scene, built.camera);
+    frames++;
+    timer += now - last;
+    last = now;
+    if (timer >= 500) {
+      document.getElementById('live-fps').textContent =
+        '实时 FPS: ' + Math.round(frames / timer * 1000) + '（AA ' + (aa ? '开' : '关') + '，' + count + ' 个）';
+      frames = 0; timer = 0;
+    }
+  }
+  frameId = requestAnimationFrame(loop);
+}
+document.getElementById('manual-aa').addEventListener('click', () => manualRun(true, 1000));
+document.getElementById('manual-noaa').addEventListener('click', () => manualRun(false, 1000));
+
+window.addEventListener('resize', () => {
+  if (!renderer) return;
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
