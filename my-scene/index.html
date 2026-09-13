@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>自主实践 · 太阳系漫游</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 左上角说明面板 -->
+  <div id="info-panel">
+    <h1>太阳系漫游</h1>
+    <p>自主实践主题三维场景 · Three.js</p>
+    <p id="hint">观察：太阳自转，星空缓缓转动。</p>
+  </div>
+
+  <!-- 行星信息标签（点击行星后显示，后续交互步骤启用） -->
+  <div id="planet-label" class="hidden"></div>
+
+  <!-- 实时帧率，供性能观察 -->
+  <div id="fps">FPS: --</div>
+
+  <!-- 三维画布挂载点 -->
+  <div id="scene-container"></div>
+
+  <!-- 在线引入 Three.js（与案例复现保持一致） -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.130.0/build/three.min.js"></script>
+  <script src="solar-system.js"></script>
+</body>
+</html>
