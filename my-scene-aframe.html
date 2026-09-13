@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>自主实践 · 太阳系漫游（A-Frame 声明式版）</title>
+  <script src="https://aframe.io/releases/1.8.0/aframe.min.js"></script>
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; font-family: "Microsoft YaHei", sans-serif; }
+    #aframe-info {
+      position: fixed; top: 16px; left: 16px; z-index: 10;
+      padding: 12px 16px; max-width: 300px;
+      background: rgba(10, 16, 34, 0.7);
+      border: 1px solid rgba(120, 170, 255, 0.35);
+      border-radius: 10px; color: #e8eefc; pointer-events: none;
+    }
+    #aframe-info h1 { margin: 0 0 4px; font-size: 18px; letter-spacing: 2px; }
+    #aframe-info p { margin: 2px 0; font-size: 13px; color: #aebbd6; line-height: 1.5; }
+    #planet-info { color: #ffd76a !important; }
+  </style>
+  <script>
+    // 自定义 starfield 组件：用 THREE.Points 在球壳上撒 800 个白点当星空。
+    // A-Frame 的 primitive 没有“点云”，这种深度定制要自己写组件（内部仍是 Three.js）。
+    AFRAME.registerComponent('starfield', {
+      init: function () {
+        const COUNT = 800;
+        const positions = new Float32Array(COUNT * 3);
+        for (let i = 0; i < COUNT; i++) {
+          const radius = 40 + Math.random() * 40;
+          const theta = Math.random() * Math.PI * 2;
+          const phi = Math.acos(2 * Math.random() - 1);
+          positions[i * 3]     = radius * Math.sin(phi) * Math.cos(theta);
+          positions[i * 3 + 1] = radius * Math.cos(phi);
+          positions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
+        }
+        const geometry = new THREE.BufferGeometry();
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        this.points = new THREE.Points(
+          geometry,
+          new THREE.PointsMaterial({ color: 0xffffff, size: 0.3 })
+        );
+        this.el.object3D.add(this.points);
+      },
+      tick: function (time, deltaMs) {
+        // deltaMs 是距上一帧的毫秒数
+        this.points.rotation.y += (deltaMs / 1000) * 0.01;
+      }
+    });
+  </script>
+</head>
+<body>
+  <!-- 说明面板 -->
+  <div id="aframe-info">
+    <h1>太阳系漫游 · A-Frame</h1>
+    <p>双库实践：用 HTML 标签声明同一个太阳系</p>
+    <p>鼠标拖拽环顾 · 滚轮/WASD 移动 · 注视行星后点击可变黄高亮</p>
+    <p id="planet-info">点击行星查看名称</p>
+  </div>
+
+  <a-scene background="color: #05070f">
+    <!-- 环境：深色天空 + 星空点云组件 -->
+    <a-sky color="#05070f"></a-sky>
+    <a-entity starfield></a-entity>
+
+    <!-- 光源：弱环境光 + 太阳处点光源 -->
+    <a-light type="ambient" color="#ffffff" intensity="0.45"></a-light>
+    <a-light type="point" color="#fff2cc" intensity="2.5" distance="30" decay="1" position="0 0 0"></a-light>
+
+    <!-- 太阳：flat 材质不受光，自身即最亮 -->
+    <a-sphere id="sun" radius="1.1" material="shader: flat; color: #ffcc33"
+              animation="property: rotation; to: 0 360 0; dur: 30000; loop: true; easing: linear">
+    </a-sphere>
+
+    <!-- 水星：公转支点绕 y 转，行星挂在 +x -->
+    <a-entity animation="property: rotation; to: 0 360 0; dur: 14000; loop: true; easing: linear">
+      <a-sphere class="planet" radius="0.18" color="#a8a29a" position="2.2 0 0"
+                data-name="水星" data-desc="离太阳最近、公转最快的行星" data-color="#a8a29a"
+                animation__spin="property: rotation; to: 0 360 0; dur: 6000; loop: true; easing: linear">
+      </a-sphere>
+    </a-entity>
+    <a-ring radius-inner="2.185" radius-outer="2.215" segments-theta="96"
+            color="#6ea8ff" material="transparent: true; opacity: 0.3; side: double"
+            rotation="-90 0 0"></a-ring>
+
+    <!-- 金星 -->
+    <a-entity animation="property: rotation; to: 0 360 0; dur: 19000; loop: true; easing: linear">
+      <a-sphere class="planet" radius="0.30" color="#e8c27a" position="3.0 0 0"
+                data-name="金星" data-desc="夜空中最亮的行星" data-color="#e8c27a"
+                animation__spin="property: rotation; to: 0 360 0; dur: 8000; loop: true; easing: linear">
+      </a-sphere>
+    </a-entity>
+    <a-ring radius-inner="2.985" radius-outer="3.015" segments-theta="96"
+            color="#6ea8ff" material="transparent: true; opacity: 0.3; side: double"
+            rotation="-90 0 0"></a-ring>
+
+    <!-- 地球 + 月球（公转支点里再嵌套月球支点） -->
+    <a-entity animation="property: rotation; to: 0 360 0; dur: 25000; loop: true; easing: linear">
+      <a-sphere class="planet" radius="0.32" color="#4f9df7" position="3.9 0 0"
+                data-name="地球" data-desc="我们的家园，带着一颗卫星月球" data-color="#4f9df7"
+                animation__spin="property: rotation; to: 0 360 0; dur: 9000; loop: true; easing: linear">
+        <a-entity animation="property: rotation; to: 0 360 0; dur: 3000; loop: true; easing: linear">
+          <a-sphere radius="0.09" color="#cfcfcf" position="0.62 0 0"></a-sphere>
+        </a-entity>
+      </a-sphere>
+    </a-entity>
+    <a-ring radius-inner="3.885" radius-outer="3.915" segments-theta="96"
+            color="#6ea8ff" material="transparent: true; opacity: 0.3; side: double"
+            rotation="-90 0 0"></a-ring>
+
+    <!-- 火星 -->
+    <a-entity animation="property: rotation; to: 0 360 0; dur: 32000; loop: true; easing: linear">
+      <a-sphere class="planet" radius="0.24" color="#e5703a" position="4.8 0 0"
+                data-name="火星" data-desc="布满铁锈色沙漠的红色行星" data-color="#e5703a"
+                animation__spin="property: rotation; to: 0 360 0; dur: 7000; loop: true; easing: linear">
+      </a-sphere>
+    </a-entity>
+    <a-ring radius-inner="4.785" radius-outer="4.815" segments-theta="96"
+            color="#6ea8ff" material="transparent: true; opacity: 0.3; side: double"
+            rotation="-90 0 0"></a-ring>
+
+    <!-- 木星 -->
+    <a-entity animation="property: rotation; to: 0 360 0; dur: 52000; loop: true; easing: linear">
+      <a-sphere class="planet" radius="0.70" color="#d8a878" position="6.1 0 0"
+                data-name="木星" data-desc="太阳系体积最大的行星" data-color="#d8a878"
+                animation__spin="property: rotation; to: 0 360 0; dur: 11000; loop: true; easing: linear">
+      </a-sphere>
+    </a-entity>
+    <a-ring radius-inner="6.085" radius-outer="6.115" segments-theta="128"
+            color="#6ea8ff" material="transparent: true; opacity: 0.3; side: double"
+            rotation="-90 0 0"></a-ring>
+
+    <!-- 土星 + 光环（a-torus 倾斜套在球体上） -->
+    <a-entity animation="property: rotation; to: 0 360 0; dur: 70000; loop: true; easing: linear">
+      <a-sphere class="planet" radius="0.60" color="#e3d6a8" position="7.5 0 0"
+                data-name="土星" data-desc="带着明亮光环的气态巨行星" data-color="#e3d6a8"
+                animation__spin="property: rotation; to: 0 360 0; dur: 10000; loop: true; easing: linear">
+        <a-torus radius="0.96" radius-tubular="0.10" segments-radial="16" segments-tubular="80"
+                 color="#cdb98c" rotation="70 0 0"></a-torus>
+      </a-sphere>
+    </a-entity>
+    <a-ring radius-inner="7.485" radius-outer="7.515" segments-theta="128"
+            color="#6ea8ff" material="transparent: true; opacity: 0.3; side: double"
+            rotation="-90 0 0"></a-ring>
+
+    <!-- 相机初始位：侧上方俯瞰；准星射线只检测 .planet，点行星变色 -->
+    <a-camera position="0 6 13" look-controls="reverseMouseDrag: true">
+      <a-cursor raycaster="objects: .planet" color="#6ea8ff"></a-cursor>
+    </a-camera>
+  </a-scene>
+
+  <script>
+    // A-Frame 点击交互：cursor 组件对射线命中的实体派发 click 事件。
+    // 点中行星 -> 变亮黄高亮并在左上角显示名称；再点同一颗恢复；点别的切换。
+    let selected = null;
+    const info = document.getElementById('planet-info');
+
+    document.addEventListener('DOMContentLoaded', function () {
+      document.querySelectorAll('.planet').forEach(function (planet) {
+        planet.addEventListener('click', function () {
+          if (selected) selected.setAttribute('color', selected.dataset.color);
+          if (selected === planet) {
+            selected = null;
+            info.textContent = '点击行星查看名称';
+            return;
+          }
+          planet.setAttribute('color', '#ffe14d');
+          selected = planet;
+          info.textContent = planet.dataset.name + '：' + planet.dataset.desc;
+        });
+      });
+    });
+  </script>
+</body>
+</html>
